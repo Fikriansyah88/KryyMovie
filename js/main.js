@@ -1,4 +1,19 @@
-document.addEventListener("DOMContentLoaded", () => {
+// ── Firebase Module Imports ─────────────────────────────────────────────
+import {
+  getCurrentUser,
+  observeAuthState,
+  logoutUser,
+} from "./firebase/auth.js";
+import {
+  addToWatchlist,
+  removeFromWatchlist,
+  isInWatchlist,
+  saveReview,
+  getUserReviewForMovie,
+  deleteReview,
+} from "./firebase/firestore.js";
+
+const initApp = async () => {
   // ── Application State ────────────────────────────────────────────────────
   const state = {
     page: 1,
@@ -7,9 +22,42 @@ document.addEventListener("DOMContentLoaded", () => {
     searchQuery: "",
     genres: [],
     currentMovieId: null, // Track active detail page ID
+    currentUser: null, // Track authenticated user
   };
 
   let searchTimeoutId = null;
+
+  // ── Auth State Management ────────────────────────────────────────────────
+  const updateAuthUI = (user) => {
+    const navLogin = document.getElementById("nav-login");
+    const navProfile = document.getElementById("nav-profile");
+    const navLogout = document.getElementById("nav-logout");
+    const userInfo = document.getElementById("user-info");
+    const usernameDisplay = document.getElementById("username-display");
+
+    state.currentUser = user;
+
+    if (user) {
+      // User is logged in
+      navLogin.style.display = "none";
+      navProfile.style.display = "flex";
+      navLogout.style.display = "flex";
+      userInfo.style.display = "flex";
+      usernameDisplay.textContent = user.username || user.email.split("@")[0];
+    } else {
+      // User is not logged in
+      navLogin.style.display = "flex";
+      navProfile.style.display = "none";
+      navLogout.style.display = "none";
+      userInfo.style.display = "none";
+      usernameDisplay.textContent = "";
+    }
+  };
+
+  // Subscribe to auth state changes
+  observeAuthState((user) => {
+    updateAuthUI(user);
+  });
 
   // ── Navigation Bar UI Updates ────────────────────────────────────────────
   const updateNavigationUI = (activeRoute) => {
@@ -108,20 +156,32 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  const routeToWatchlist = () => {
+  const routeToWatchlist = async () => {
     updateNavigationUI("watchlist");
     state.currentMovieId = null;
     window.scrollTo(0, 0);
 
     try {
-      const watchlist = STORAGE.getWatchlist();
+      const currentUser = getCurrentUser();
+
+      // Check if user is logged in
+      if (!currentUser) {
+        // Show empty watchlist message and redirect to login
+        UI.renderWatchlistView([]);
+        UI.showToast("Silakan login untuk melihat watchlist Anda", "error");
+        return;
+      }
+
+      // Load watchlist from Firestore
+      const watchlist = await (async () => {
+        const { getWatchlist } = await import("./firebase/firestore.js");
+        return getWatchlist(currentUser.uid);
+      })();
+
       UI.renderWatchlistView(watchlist);
     } catch (err) {
       console.error("[MAIN] Gagal memuat watchlist:", err);
-      UI.showError(
-        "Gagal mengambil daftar watchlist dari penyimpanan lokal.",
-        routeToWatchlist,
-      );
+      UI.showError("Gagal mengambil daftar watchlist Anda.", routeToWatchlist);
     }
   };
 
@@ -138,7 +198,12 @@ document.addEventListener("DOMContentLoaded", () => {
         API.getMovieCredits(movieId),
       ]);
 
-      UI.renderDetailView(movieDetail, movieCredits);
+      const currentUser = getCurrentUser();
+      const userReview = currentUser
+        ? await getUserReviewForMovie(currentUser.uid, movieId)
+        : null;
+
+      UI.renderDetailView(movieDetail, movieCredits, userReview);
     } catch (err) {
       console.error("[MAIN] Gagal memuat detail film:", err);
       UI.showError(err.message, () => routeToDetail(movieId));
@@ -205,7 +270,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // ── Global Event Delegation ──────────────────────────────────────────────
-  document.addEventListener("click", (e) => {
+  document.addEventListener("click", async (e) => {
     // 1. Navigation Home / Logo Clicks (resets filter & search if already on Home)
     const logoLink = e.target.closest(".logo");
     const homeNavLink = e.target.closest("#nav-home");
@@ -233,41 +298,58 @@ document.addEventListener("DOMContentLoaded", () => {
       e.target.closest("#detail-watchlist-btn");
     if (watchlistBtn) {
       e.preventDefault();
+
+      // Check if user is logged in
+      const user = getCurrentUser();
+      if (!user) {
+        UI.showToast("Silakan login untuk menambahkan ke watchlist", "error");
+        window.location.href = "pages/auth.html";
+        return;
+      }
+
       try {
         const movieData = JSON.parse(
           watchlistBtn.getAttribute("data-movie-data"),
         );
-        const added = STORAGE.toggleWatchlist(movieData);
 
-        // Show Feedback Toast
-        if (added) {
+        // Check if already in watchlist
+        const inWatchlist = await isInWatchlist(user.uid, movieData.id);
+
+        if (inWatchlist) {
+          // Remove from watchlist
+          await removeFromWatchlist(user.uid, movieData.id);
+          UI.showToast(`"${movieData.title}" dihapus dari Watchlist.`, "error");
+        } else {
+          // Add to watchlist
+          await addToWatchlist(user.uid, movieData);
           UI.showToast(
             `"${movieData.title}" ditambahkan ke Watchlist!`,
             "success",
           );
-        } else {
-          UI.showToast(`"${movieData.title}" dihapus dari Watchlist.`, "error");
         }
 
         // Live update watchlist view if active
         if (window.location.hash === "#/watchlist") {
-          routeToWatchlist();
+          await routeToWatchlist();
         } else if (window.location.hash.startsWith("#/detail/")) {
-          watchlistBtn.className = `btn-watchlist-detail ${added ? "added" : "not-added"}`;
-          watchlistBtn.querySelector("span").textContent = added
+          const isNowInWatchlist = await isInWatchlist(user.uid, movieData.id);
+          watchlistBtn.className = `btn-watchlist-detail ${isNowInWatchlist ? "added" : "not-added"}`;
+          watchlistBtn.querySelector("span").textContent = isNowInWatchlist
             ? "Di Watchlist"
             : "Tambah ke Watchlist";
           watchlistBtn
             .querySelector("svg")
-            .setAttribute("fill", added ? "currentColor" : "none");
+            .setAttribute("fill", isNowInWatchlist ? "currentColor" : "none");
         } else {
-          watchlistBtn.classList.toggle("in-watchlist", added);
+          const isNowInWatchlist = await isInWatchlist(user.uid, movieData.id);
+          watchlistBtn.classList.toggle("in-watchlist", isNowInWatchlist);
           watchlistBtn
             .querySelector("svg")
-            .setAttribute("fill", added ? "currentColor" : "none");
+            .setAttribute("fill", isNowInWatchlist ? "currentColor" : "none");
         }
       } catch (err) {
         console.error("[MAIN] Gagal memperbarui watchlist:", err);
+        UI.showToast("Gagal memperbarui watchlist", "error");
       }
       return;
     }
@@ -314,6 +396,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const submitReviewBtn = e.target.closest("#btn-submit-review");
     if (submitReviewBtn) {
       e.preventDefault();
+
+      const user = getCurrentUser();
+      if (!user) {
+        UI.showToast("Silakan login untuk menambahkan review", "error");
+        window.location.href = "pages/auth.html";
+        return;
+      }
+
       const selector = document.getElementById("stars-selector");
       const textarea = document.getElementById("review-textarea");
 
@@ -331,12 +421,20 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       try {
-        STORAGE.saveRating(state.currentMovieId, rating, reviewText);
+        submitReviewBtn.disabled = true;
+        await saveReview(
+          user.uid,
+          user.username || user.email.split("@")[0],
+          state.currentMovieId,
+          rating,
+          reviewText,
+        );
         UI.showToast("Ulasan Anda berhasil disimpan!", "success");
-        routeToDetail(state.currentMovieId);
+        await routeToDetail(state.currentMovieId);
       } catch (err) {
         console.error("[MAIN] Gagal menyimpan ulasan:", err);
-        UI.showToast("Gagal menyimpan ulasan Anda.", "error");
+        UI.showToast(err.message || "Gagal menyimpan ulasan Anda.", "error");
+        submitReviewBtn.disabled = false;
       }
       return;
     }
@@ -345,15 +443,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const deleteReviewBtn = e.target.closest("#btn-delete-review");
     if (deleteReviewBtn) {
       e.preventDefault();
-      if (!state.currentMovieId) return;
+
+      const user = getCurrentUser();
+      if (!user || !state.currentMovieId) return;
 
       try {
-        STORAGE.deleteRating(state.currentMovieId);
-        UI.showToast("Ulasan Anda telah dihapus.", "error");
-        routeToDetail(state.currentMovieId);
+        deleteReviewBtn.disabled = true;
+        await deleteReview(user.uid, state.currentMovieId);
+        UI.showToast("Ulasan Anda telah dihapus.", "success");
+        await routeToDetail(state.currentMovieId);
       } catch (err) {
         console.error("[MAIN] Gagal menghapus ulasan:", err);
         UI.showToast("Gagal menghapus ulasan Anda.", "error");
+        deleteReviewBtn.disabled = false;
       }
       return;
     }
@@ -432,4 +534,25 @@ document.addEventListener("DOMContentLoaded", () => {
   // Run routing on initial load and whenever hash changes
   handleRouting();
   window.addEventListener("hashchange", handleRouting);
-});
+
+  // ── Logout Button Handler ────────────────────────────────────────────────
+  const logoutBtn = document.getElementById("nav-logout");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      try {
+        await logoutUser();
+        window.location.href = "index.html#/";
+      } catch (err) {
+        console.error("[MAIN] Logout error:", err);
+        UI.showToast("Gagal logout", "error");
+      }
+    });
+  }
+};
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initApp, { once: true });
+} else {
+  initApp();
+}

@@ -141,6 +141,9 @@ img {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   transition: var(--transition-fast);
+  background: none;
+  border: none;
+  cursor: pointer;
 }
 
 .nav-link:hover {
@@ -156,6 +159,42 @@ img {
 .nav-icon {
   width: 18px;
   height: 18px;
+}
+
+/* ── New Auth Navigation Elements ────────────────────────────────────────── */
+.nav-spacer {
+  flex: 1;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+#username-display {
+  color: var(--accent-gold);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.nav-logout-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 0.5rem 1rem;
+}
+
+.nav-logout-btn:hover {
+  background: var(--accent-error);
+  border-color: var(--accent-error);
+  color: var(--text-primary);
+}
+
+.nav-link.active {
+  color: var(--accent-gold);
+  background: transparent;
 }
 
 /* ── Dynamic Content Container ───────────────────────────────────────────── */

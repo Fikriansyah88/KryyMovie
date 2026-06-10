@@ -16,7 +16,9 @@ const UI = (() => {
 
     const rating = movie.vote_average ? movie.vote_average.toFixed(1) : "N/A";
 
-    const inWatchlist = STORAGE.isInWatchlist(movie.id);
+    // Note: watchlist status will be checked asynchronously on page load
+    // Default to not in watchlist (can be updated via event handler)
+    const inWatchlist = false;
 
     return `
       <article class="movie-card" data-movie-id="${movie.id}">
@@ -81,6 +83,25 @@ const UI = (() => {
     } catch {
       return dateStr;
     }
+  };
+
+  const formatReviewDate = (value) => {
+    if (!value) return "-";
+
+    const date =
+      typeof value?.toDate === "function" ? value.toDate() : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return "-";
+    }
+
+    return date.toLocaleDateString("id-ID", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   // ── Public Layout Renders ────────────────────────────────────────────────
@@ -275,7 +296,7 @@ const UI = (() => {
     `;
   };
 
-  const renderDetailView = (movie, credits) => {
+  const renderDetailView = (movie, credits, userReview = null) => {
     const backdrop = movie.backdrop_path
       ? `${CONFIG.IMAGE_BASE_URL}${CONFIG.BACKDROP_SIZE}${movie.backdrop_path}`
       : "";
@@ -292,7 +313,7 @@ const UI = (() => {
       .map((g) => `<span class="genre-tag">${g.name}</span>`)
       .join("");
 
-    const inWatchlist = STORAGE.isInWatchlist(movie.id);
+    const inWatchlist = false; // Will be updated asynchronously
 
     // Limit cast to 8 members
     const topCast = (credits?.cast || []).slice(0, 8);
@@ -316,11 +337,9 @@ const UI = (() => {
           .join("")
       : `<p style="color: var(--text-muted); font-style: italic;">Informasi pemeran tidak tersedia.</p>`;
 
-    // Load user rating / review
-    const userReview = STORAGE.getRating(movie.id);
     const hasExistingReview = !!userReview;
-    const ratingValue = userReview ? userReview.rating : 0;
-    const reviewText = userReview ? userReview.review : "";
+    const ratingValue = userReview?.rating || 0;
+    const reviewText = userReview?.comment || "";
 
     container.innerHTML = `
       <div class="detail-view">
@@ -460,15 +479,7 @@ const UI = (() => {
                           </div>
                         </div>
                         <p class="review-body">${reviewText || "Hanya memberikan rating bintang."}</p>
-                        <span class="review-date">Terakhir diperbarui: ${new Date(
-                          userReview.updatedAt,
-                        ).toLocaleDateString("id-ID", {
-                          year: "numeric",
-                          month: "long",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}</span>
+                        <span class="review-date">Terakhir diperbarui: ${formatReviewDate(userReview.updatedAt)}</span>
                       </div>
                     `
                         : `
